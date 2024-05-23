@@ -38,6 +38,8 @@ const (
 	LabelSnapshotUIDMapping = "containerd.io/snapshot/uidmapping"
 	// LabelSnapshotGIDMapping is the label used for GID mappings
 	LabelSnapshotGIDMapping = "containerd.io/snapshot/gidmapping"
+	// LabelSnapshotUserNSMapping is the label used for user ns mappings
+	LabelSnapshotUserNSMapping = "containerd.io/snapshot/usernsmapping"
 )
 
 // Kind identifies the kind of snapshot.

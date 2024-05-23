@@ -27,6 +27,7 @@ import (
 
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/pkg/idtools"
 	"github.com/containerd/errdefs"
 	"github.com/opencontainers/image-spec/identity"
 )
@@ -34,25 +35,63 @@ import (
 // WithRemappedSnapshot creates a new snapshot and remaps the uid/gid for the
 // filesystem to be used by a container with user namespaces
 func WithRemappedSnapshot(id string, i Image, uid, gid uint32) NewContainerOpts {
-	return withRemappedSnapshotBase(id, i, uid, gid, false)
+	idmap := idtools.IdentityMapping{
+		UIDMaps: []idtools.IDMap{
+			{
+				ContainerID: 0,
+				HostID:      int(uid),
+				Size:        1,
+			},
+		},
+		GIDMaps: []idtools.IDMap{
+			{
+				ContainerID: 0,
+				HostID:      int(gid),
+				Size:        1,
+			},
+		},
+	}
+	return withRemappedSnapshotBase(id, i, idmap, false)
+}
+func WithMultiRemappedSnapshot(id string, i Image, idmap idtools.IdentityMapping) NewContainerOpts {
+	return withRemappedSnapshotBase(id, i, idmap, false)
 }
 
 // WithRemappedSnapshotView is similar to WithRemappedSnapshot but rootfs is mounted as read-only.
 func WithRemappedSnapshotView(id string, i Image, uid, gid uint32) NewContainerOpts {
-	return withRemappedSnapshotBase(id, i, uid, gid, true)
+	idmap := idtools.IdentityMapping{
+		UIDMaps: []idtools.IDMap{
+			{
+				ContainerID: 0,
+				HostID:      int(uid),
+				Size:        1,
+			},
+		},
+		GIDMaps: []idtools.IDMap{
+			{
+				ContainerID: 0,
+				HostID:      int(gid),
+				Size:        1,
+			},
+		},
+	}
+	return withRemappedSnapshotBase(id, i, idmap, true)
+}
+func WithMultiRemappedSnapshotView(id string, i Image, idmap idtools.IdentityMapping) NewContainerOpts {
+	return withRemappedSnapshotBase(id, i, idmap, true)
 }
 
-func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool) NewContainerOpts {
+func withRemappedSnapshotBase(id string, i Image, idmap idtools.IdentityMapping, readonly bool) NewContainerOpts {
 	return func(ctx context.Context, client *Client, c *containers.Container) error {
 		diffIDs, err := i.(*image).i.RootFS(ctx, client.ContentStore(), client.platform)
 		if err != nil {
 			return err
 		}
 
-		var (
-			parent   = identity.ChainID(diffIDs).String()
-			usernsID = fmt.Sprintf("%s-%d-%d", parent, uid, gid)
-		)
+		parent := identity.ChainID(diffIDs).String()
+		rootMap := idmap.RootPair()
+		usernsID := fmt.Sprintf("%s-%d-%d", parent, rootMap.UID, rootMap.GID)
+
 		c.Snapshotter, err = client.resolveSnapshotterName(ctx, c.Snapshotter)
 		if err != nil {
 			return err
@@ -74,7 +113,7 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 		if err != nil {
 			return err
 		}
-		if err := remapRootFS(ctx, mounts, uid, gid); err != nil {
+		if err := remapRootFS(ctx, mounts, idmap); err != nil {
 			snapshotter.Remove(ctx, usernsID)
 			return err
 		}
@@ -95,22 +134,23 @@ func withRemappedSnapshotBase(id string, i Image, uid, gid uint32, readonly bool
 	}
 }
 
-func remapRootFS(ctx context.Context, mounts []mount.Mount, uid, gid uint32) error {
+func remapRootFS(ctx context.Context, mounts []mount.Mount, idmap idtools.IdentityMapping) error {
 	return mount.WithTempMount(ctx, mounts, func(root string) error {
-		return filepath.Walk(root, incrementFS(root, uid, gid))
+		return filepath.Walk(root, chown(root, idmap))
 	})
 }
 
-func incrementFS(root string, uidInc, gidInc uint32) filepath.WalkFunc {
+func chown(root string, idmap idtools.IdentityMapping) filepath.WalkFunc {
 	return func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		var (
-			stat = info.Sys().(*syscall.Stat_t)
-			u, g = int(stat.Uid + uidInc), int(stat.Gid + gidInc)
-		)
+		stat := info.Sys().(*syscall.Stat_t)
+		h, cerr := idmap.ToHost(idtools.Identity{UID: int(stat.Uid), GID: int(stat.Gid)})
+		if cerr != nil {
+			return cerr
+		}
 		// be sure the lchown the path as to not de-reference the symlink to a host file
-		return os.Lchown(path, u, g)
+		return os.Lchown(path, h.UID, h.GID)
 	}
 }
