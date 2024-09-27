@@ -41,12 +41,21 @@ func WithRemapperLabels(ctrUID, hostUID, ctrGID, hostGID, length uint32) snapsho
 }
 
 func WithMultiRemapperLabels(idmap idtools.IdentityMapping) snapshots.Opt {
-	if val, err := json.Marshal(idmap); err == nil {
-		return snapshots.WithLabels(map[string]string{
-			snapshots.LabelSnapshotUserNSMapping: string(val),
-		})
+	uidMap, err := json.Marshal(idmap.UIDMaps)
+	if err != nil {
+		return snapshots.WithLabels(map[string]string{})
 	}
-	return snapshots.WithLabels(map[string]string{})
+
+	gidMap, err := json.Marshal(idmap.GIDMaps)
+	if err != nil {
+		return snapshots.WithLabels(map[string]string{})
+	}
+
+	return snapshots.WithLabels(map[string]string{
+		snapshots.LabelSnapshotUIDMapping: string(uidMap),
+		snapshots.LabelSnapshotGIDMapping: string(gidMap),
+	})
+
 }
 
 func resolveSnapshotOptions(ctx context.Context, client *Client, snapshotterName string, snapshotter snapshots.Snapshotter, parent string, opts ...snapshots.Opt) (string, error) {
